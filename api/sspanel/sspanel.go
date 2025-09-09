@@ -611,73 +611,97 @@ func (c *APIClient) ParseSSPluginNodeResponse(nodeInfoResponse *NodeInfoResponse
 
 // ParseTrojanNodeResponse parse the response for the given node info format
 func (c *APIClient) ParseTrojanNodeResponse(nodeInfoResponse *NodeInfoResponse) (*api.NodeInfo, error) {
-	// 域名或IP;port=连接端口#偏移端口|host=xx
-	// gz.aaa.com;port=443#12345|host=hk.aaa.com
-	var p, host, outsidePort, insidePort, transportProtocol, serviceName string
-	var speedLimit uint64 = 0
+    var p, host, outsidePort, insidePort, transportProtocol, serviceName, path string
+    var speedLimit uint64 = 0
 
-	if nodeInfoResponse.RawServerString == "" {
-		return nil, fmt.Errorf("no server info in response")
-	}
-	if result := firstPortRe.FindStringSubmatch(nodeInfoResponse.RawServerString); len(result) > 1 {
-		outsidePort = result[1]
-	}
-	if result := secondPortRe.FindStringSubmatch(nodeInfoResponse.RawServerString); len(result) > 1 {
-		insidePort = result[1]
-	}
-	if result := hostRe.FindStringSubmatch(nodeInfoResponse.RawServerString); len(result) > 1 {
-		host = result[1]
-	}
+    if nodeInfoResponse.RawServerString == "" {
+        return nil, fmt.Errorf("no server info in response")
+    }
+    
+    // 解析端口信息
+    if result := firstPortRe.FindStringSubmatch(nodeInfoResponse.RawServerString); len(result) > 1 {
+        outsidePort = result[1]
+    }
+    if result := secondPortRe.FindStringSubmatch(nodeInfoResponse.RawServerString); len(result) > 1 {
+        insidePort = result[1]
+    }
+    if result := hostRe.FindStringSubmatch(nodeInfoResponse.RawServerString); len(result) > 1 {
+        host = result[1]
+    }
 
-	if insidePort != "" {
-		p = insidePort
-	} else {
-		p = outsidePort
-	}
+    if insidePort != "" {
+        p = insidePort
+    } else {
+        p = outsidePort
+    }
 
-	parsedPort, err := strconv.ParseInt(p, 10, 32)
-	if err != nil {
-		return nil, err
-	}
-	port := uint32(parsedPort)
+    parsedPort, err := strconv.ParseInt(p, 10, 32)
+    if err != nil {
+        return nil, err
+    }
+    port := uint32(parsedPort)
 
-	serverConf := strings.Split(nodeInfoResponse.RawServerString, ";")
-	extraServerConf := strings.Split(serverConf[1], "|")
-	transportProtocol = "tcp"
-	serviceName = ""
-	for _, item := range extraServerConf {
-		conf := strings.Split(item, "=")
-		key := conf[0]
-		if key == "" {
-			continue
-		}
-		value := conf[1]
-		switch key {
-		case "grpc":
-			transportProtocol = "grpc"
-		case "servicename":
-			serviceName = value
-		}
-	}
+    // 解析服务器配置
+    serverConf := strings.Split(nodeInfoResponse.RawServerString, ";")
+    if len(serverConf) < 2 {
+        return nil, fmt.Errorf("invalid server config format: %s", nodeInfoResponse.RawServerString)
+    }
+    
+    // 解析额外配置
+    extraServerConf := strings.Split(serverConf[1], "|")
+    transportProtocol = "tcp" // 默认传输协议
+    
+    // 遍历所有额外配置项
+    for _, item := range extraServerConf {
+        conf := strings.SplitN(item, "=", 2)
+        if len(conf) < 2 {
+            continue
+        }
+        
+        key := conf[0]
+        value := conf[1]
+        
+        switch key {
+        case "host":
+            host = value
+        case "grpc":
+            transportProtocol = "grpc"
+        case "ws":
+            // 检测到 ws 参数，设置为 WebSocket 传输协议
+            transportProtocol = "ws"
+        case "servicename":
+            serviceName = value
+        case "path":
+            // 路径可能包含等号，所以使用原始值
+            path = value
+        }
+    }
 
-	if c.SpeedLimit > 0 {
-		speedLimit = uint64((c.SpeedLimit * 1000000) / 8)
-	} else {
-		speedLimit = uint64((nodeInfoResponse.SpeedLimit * 1000000) / 8)
-	}
-	// Create GeneralNodeInfo
-	nodeInfo := &api.NodeInfo{
-		NodeType:          c.NodeType,
-		NodeID:            c.NodeID,
-		Port:              port,
-		SpeedLimit:        speedLimit,
-		TransportProtocol: transportProtocol,
-		EnableTLS:         true,
-		Host:              host,
-		ServiceName:       serviceName,
-	}
+    // 只有在使用 WebSocket 传输协议时才保留 Path 值
+    if transportProtocol != "ws" {
+        path = "" // 非 WebSocket 协议时清空 Path
+    }
 
-	return nodeInfo, nil
+    if c.SpeedLimit > 0 {
+        speedLimit = uint64((c.SpeedLimit * 1000000) / 8)
+    } else {
+        speedLimit = uint64((nodeInfoResponse.SpeedLimit * 1000000) / 8)
+    }
+    
+    // 创建 GeneralNodeInfo
+    nodeInfo := &api.NodeInfo{
+        NodeType:          c.NodeType,
+        NodeID:            c.NodeID,
+        Port:              port,
+        SpeedLimit:        speedLimit,
+        TransportProtocol: transportProtocol,
+        EnableTLS:         true,  // Trojan 默认启用 TLS
+        Host:              host,
+        ServiceName:       serviceName,
+        Path:              path,  // 直接在这里设置 Path
+    }
+
+    return nodeInfo, nil
 }
 
 // ParseUserListResponse parse the response for the given node info format
